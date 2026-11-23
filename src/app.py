@@ -5,9 +5,12 @@ A super simple FastAPI application that allows students to view and sign up
 for extracurricular activities at Mergington High School.
 """
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse
+import hashlib
+import hmac
+import json
 import os
 from pathlib import Path
 
@@ -18,6 +21,52 @@ app = FastAPI(title="Mergington High School API",
 current_dir = Path(__file__).parent
 app.mount("/static", StaticFiles(directory=os.path.join(Path(__file__).parent,
           "static")), name="static")
+
+TEACHERS_FILE = current_dir / "teachers.json"
+SESSION_COOKIE = "teacher_session"
+SESSION_SECRET = os.getenv("TEACHER_SESSION_SECRET", "mergington-dev-session-secret")
+
+
+def load_teachers():
+    if not TEACHERS_FILE.exists():
+        return {}
+    with open(TEACHERS_FILE, "r", encoding="utf-8") as file:
+        data = json.load(file)
+    return data if isinstance(data, dict) else {}
+
+
+def verify_password(stored_password: str, password: str) -> bool:
+    candidate_hash = hashlib.sha256(password.encode("utf-8")).hexdigest()
+    return hmac.compare_digest(str(stored_password), candidate_hash)
+
+
+def sign_username(username: str) -> str:
+    signature = hmac.new(
+        SESSION_SECRET.encode("utf-8"),
+        username.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    return f"{username}:{signature}"
+
+
+def verify_session(request: Request) -> str | None:
+    signed_session = request.cookies.get(SESSION_COOKIE)
+    if not signed_session or ":" not in signed_session:
+        return None
+
+    username, _ = signed_session.rsplit(":", 1)
+    if not hmac.compare_digest(sign_username(username), signed_session):
+        return None
+    if username not in load_teachers():
+        return None
+    return username
+
+
+def require_teacher(request: Request) -> str:
+    username = verify_session(request)
+    if not username:
+        raise HTTPException(status_code=401, detail="Teacher login required")
+    return username
 
 # In-memory activity database
 activities = {
@@ -88,9 +137,41 @@ def get_activities():
     return activities
 
 
+@app.post("/login")
+def login(username: str, password: str, response: Response):
+    teachers = load_teachers()
+    stored_password = teachers.get(username)
+    if stored_password is None or not verify_password(stored_password, password):
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+
+    response.set_cookie(
+        key=SESSION_COOKIE,
+        value=sign_username(username),
+        httponly=True,
+        samesite="lax",
+    )
+    return {"message": f"Logged in as {username}", "username": username}
+
+
+@app.post("/logout")
+def logout(response: Response):
+    response.delete_cookie(key=SESSION_COOKIE)
+    return {"message": "Logged out"}
+
+
+@app.get("/session")
+def get_session(request: Request):
+    username = verify_session(request)
+    if not username:
+        return {"authenticated": False}
+    return {"authenticated": True, "username": username}
+
+
 @app.post("/activities/{activity_name}/signup")
-def signup_for_activity(activity_name: str, email: str):
+def signup_for_activity(request: Request, activity_name: str, email: str):
     """Sign up a student for an activity"""
+    require_teacher(request)
+
     # Validate activity exists
     if activity_name not in activities:
         raise HTTPException(status_code=404, detail="Activity not found")
@@ -111,8 +192,10 @@ def signup_for_activity(activity_name: str, email: str):
 
 
 @app.delete("/activities/{activity_name}/unregister")
-def unregister_from_activity(activity_name: str, email: str):
+def unregister_from_activity(request: Request, activity_name: str, email: str):
     """Unregister a student from an activity"""
+    require_teacher(request)
+
     # Validate activity exists
     if activity_name not in activities:
         raise HTTPException(status_code=404, detail="Activity not found")

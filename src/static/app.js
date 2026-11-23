@@ -3,6 +3,30 @@ document.addEventListener("DOMContentLoaded", () => {
   const activitySelect = document.getElementById("activity");
   const signupForm = document.getElementById("signup-form");
   const messageDiv = document.getElementById("message");
+  const userMenuButton = document.getElementById("user-menu-button");
+  const loginModal = document.getElementById("login-modal");
+  const loginClose = document.getElementById("login-close");
+  const loginForm = document.getElementById("login-form");
+  const logoutButton = document.getElementById("logout-button");
+  const loginMessage = document.getElementById("login-message");
+  const signupContainer = document.getElementById("signup-container");
+  let isTeacher = false;
+
+  async function checkSession() {
+    try {
+      const response = await fetch("/session");
+      const session = await response.json();
+      isTeacher = session.authenticated;
+      userMenuButton.textContent = isTeacher ? "✓" : "👤";
+      userMenuButton.title = isTeacher ? `Logged in as ${session.username}` : "Teacher login";
+      signupContainer.classList.toggle("hidden", !isTeacher);
+      fetchActivities();
+    } catch (error) {
+      console.error("Error checking session:", error);
+      signupContainer.classList.add("hidden");
+      fetchActivities();
+    }
+  }
 
   // Function to fetch activities from API
   async function fetchActivities() {
@@ -30,7 +54,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 ${details.participants
                   .map(
                     (email) =>
-                      `<li><span class="participant-email">${email}</span><button class="delete-btn" data-activity="${name}" data-email="${email}">❌</button></li>`
+                      `<li><span class="participant-email">${email}</span>${isTeacher ? `<button class="delete-btn" data-activity="${name}" data-email="${email}" aria-label="Unregister ${email}">❌</button>` : ""}</li>`
                   )
                   .join("")}
               </ul>
@@ -155,6 +179,65 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
+  userMenuButton.addEventListener("click", () => {
+    loginModal.classList.remove("hidden");
+    loginForm.classList.toggle("hidden", isTeacher);
+    logoutButton.classList.toggle("hidden", !isTeacher);
+  });
+
+  loginClose.addEventListener("click", () => {
+    loginModal.classList.add("hidden");
+  });
+
+  loginModal.addEventListener("click", (event) => {
+    if (event.target === loginModal) {
+      loginModal.classList.add("hidden");
+    }
+  });
+
+  loginForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+
+    const username = document.getElementById("username").value;
+    const password = document.getElementById("password").value;
+
+    try {
+      const response = await fetch(
+        `/login?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}`,
+        { method: "POST" }
+      );
+      const result = await response.json();
+
+      if (response.ok) {
+        isTeacher = true;
+        loginModal.classList.add("hidden");
+        signupContainer.classList.remove("hidden");
+        userMenuButton.textContent = "✓";
+        userMenuButton.title = `Logged in as ${result.username}`;
+        loginForm.reset();
+        fetchActivities();
+      } else {
+        loginMessage.textContent = result.detail || "Login failed";
+        loginMessage.className = "error";
+        loginMessage.classList.remove("hidden");
+      }
+    } catch (error) {
+      loginMessage.textContent = "Login failed";
+      loginMessage.className = "error";
+      loginMessage.classList.remove("hidden");
+    }
+  });
+
+  logoutButton.addEventListener("click", async () => {
+    await fetch("/logout", { method: "POST" });
+    isTeacher = false;
+    signupContainer.classList.add("hidden");
+    userMenuButton.textContent = "👤";
+    userMenuButton.title = "Teacher login";
+    loginModal.classList.add("hidden");
+    fetchActivities();
+  });
+
   // Initialize app
-  fetchActivities();
+  checkSession();
 });
